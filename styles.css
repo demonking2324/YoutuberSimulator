@@ -352,7 +352,6 @@ body {
 
 .page.active {
   display: block;
-  animation: fade-up 0.35s ease both;
 }
 
 .topbar-brand {

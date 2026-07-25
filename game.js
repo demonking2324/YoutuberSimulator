@@ -420,14 +420,28 @@ function enterGame() {
 
 function showPage(page) {
   state.currentPage = page;
-  els.pageParty?.classList.toggle("active", page === "party");
-  els.pageStudio.classList.toggle("active", page === "studio");
-  els.pageVideos.classList.toggle("active", page === "videos");
-  els.pageBusiness.classList.toggle("active", page === "business");
-  els.navButtons.forEach((btn) => {
+
+  const partyPage = document.getElementById("page-party");
+  const studioPage = document.getElementById("page-studio");
+  const videosPage = document.getElementById("page-videos");
+  const businessPage = document.getElementById("page-business");
+
+  partyPage?.classList.toggle("active", page === "party");
+  studioPage?.classList.toggle("active", page === "studio");
+  videosPage?.classList.toggle("active", page === "videos");
+  businessPage?.classList.toggle("active", page === "business");
+
+  document.querySelectorAll(".nav-btn").forEach((btn) => {
     btn.classList.toggle("active", btn.dataset.page === page);
   });
-  if (page === "party" && window.Party?.render) window.Party.render();
+
+  if (page === "party") {
+    try {
+      window.Party?.render?.();
+    } catch (error) {
+      console.error("Party render failed", error);
+    }
+  }
   if (page === "videos") renderVideosPage();
   if (page === "business") renderBusinessPage();
 }

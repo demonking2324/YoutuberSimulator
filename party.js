@@ -418,21 +418,23 @@ const Party = (() => {
   }
 
   function renderInvites() {
+    if (!ui.invites) return;
     if (!incomingInvites.length) {
       ui.invites.innerHTML = `<div class="biz-card"><p>No invites right now.</p></div>`;
       return;
     }
 
+    const yts = api();
     ui.invites.innerHTML = incomingInvites
       .map((invite, index) => {
         const p = invite.profile;
         return `
           <div class="biz-card">
-            <h3>${api().escapeHtml(p.channelName)}</h3>
+            <h3>${yts.escapeHtml(p.channelName)}</h3>
             <p>wants you in their party</p>
             <div class="biz-stat-row">
-              <span>${api().formatSubs(p.subs)} subs</span>
-              <span>${api().formatMoney(p.money)}</span>
+              <span>${yts.formatSubs(p.subs)} subs</span>
+              <span>${yts.formatMoney(p.money)}</span>
             </div>
             <div class="biz-actions">
               <button type="button" class="btn btn-primary" data-party="accept-invite" data-index="${index}">Accept</button>
@@ -444,29 +446,45 @@ const Party = (() => {
   }
 
   function renderTable() {
+    if (!ui.tableBody) return;
+    const yts = api();
+    if (!yts?.getState) {
+      ui.tableBody.innerHTML = `<tr class="is-self"><td colspan="5">Loading party…</td></tr>`;
+      return;
+    }
+
     upsertSelf();
-    const rows = [...members.values()].sort((a, b) => {
-      if (a.isSelf) return -1;
-      if (b.isSelf) return 1;
-      return b.subs - a.subs;
-    });
+    const rows = [...members.values()]
+      .filter((row) => row.channelName)
+      .sort((a, b) => {
+        if (a.isSelf) return -1;
+        if (b.isSelf) return 1;
+        return b.subs - a.subs;
+      });
 
     const others = rows.filter((row) => !row.isSelf).length;
-    ui.tableHint.textContent =
-      others === 0
-        ? "Invite friends to track subs and cash together."
-        : `${others + 1} creators in your party.`;
-    ui.leaveBtn.classList.toggle("hidden", others === 0);
+    if (ui.tableHint) {
+      ui.tableHint.textContent =
+        others === 0
+          ? "Invite friends to track subs and cash together."
+          : `${others + 1} creators in your party.`;
+    }
+    ui.leaveBtn?.classList.toggle("hidden", others === 0);
+
+    if (!rows.length) {
+      ui.tableBody.innerHTML = `<tr class="is-self"><td colspan="5">Your channel will show up here.</td></tr>`;
+      return;
+    }
 
     ui.tableBody.innerHTML = rows
       .map((member) => {
         const status = member.isSelf ? "You" : member.online ? "Online" : "Away";
         return `
           <tr class="${member.isSelf ? "is-self" : ""}">
-            <td>${api().escapeHtml(member.channelName)}</td>
-            <td>${api().escapeHtml(member.nicheLabel || "—")}</td>
-            <td>${api().formatSubs(member.subs)}</td>
-            <td>${api().formatMoney(member.money)}</td>
+            <td>${yts.escapeHtml(member.channelName)}</td>
+            <td>${yts.escapeHtml(member.nicheLabel || "—")}</td>
+            <td>${yts.formatSubs(member.subs)}</td>
+            <td>${yts.formatMoney(member.money)}</td>
             <td><span class="party-online ${member.online || member.isSelf ? "on" : "off"}">${status}</span></td>
           </tr>`;
       })
@@ -474,9 +492,14 @@ const Party = (() => {
   }
 
   function render() {
-    renderSearchResult();
-    renderInvites();
-    renderTable();
+    try {
+      renderSearchResult();
+      renderInvites();
+      renderTable();
+    } catch (error) {
+      console.error("Party UI render failed", error);
+      setStatus("Party UI hit a snag, but you can still search.");
+    }
   }
 
   function broadcastStats() {

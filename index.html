@@ -131,7 +131,9 @@
           <section class="panel">
             <h2>Invites</h2>
             <p class="panel-hint">Incoming party invites show up here.</p>
-            <div id="party-invites" class="party-invites"></div>
+            <div id="party-invites" class="party-invites">
+              <div class="biz-card"><p>No invites right now.</p></div>
+            </div>
           </section>
 
           <section class="panel party-table-panel">
@@ -153,7 +155,11 @@
                     <th>Status</th>
                   </tr>
                 </thead>
-                <tbody id="party-table-body"></tbody>
+                <tbody id="party-table-body">
+                  <tr class="is-self">
+                    <td colspan="5">Your channel will show up here after you launch.</td>
+                  </tr>
+                </tbody>
               </table>
             </div>
           </section>
@@ -368,8 +374,8 @@
       </div>
     </dialog>
 
-    <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
-    <script src="game.js"></script>
-    <script src="party.js"></script>
+    <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js" defer></script>
+    <script src="game.js" defer></script>
+    <script src="party.js" defer></script>
   </body>
 </html>
