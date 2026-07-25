@@ -75,6 +75,7 @@
           </div>
         </div>
         <nav class="top-nav" aria-label="Channel pages">
+          <button type="button" class="nav-btn" data-page="party">My Party</button>
           <button type="button" class="nav-btn active" data-page="studio">Studio</button>
           <button type="button" class="nav-btn" data-page="videos">Videos</button>
           <button type="button" class="nav-btn" data-page="business">Business</button>
@@ -100,6 +101,62 @@
         <div class="stat">
           <span class="stat-label">Rep</span>
           <strong id="stat-rep">50</strong>
+        </div>
+      </div>
+
+      <div id="page-party" class="page page-party">
+        <div class="party-grid">
+          <section class="panel">
+            <h2>Find a creator</h2>
+            <p class="panel-hint">
+              Search another player's channel name while they're online, then send a party invite.
+            </p>
+            <form id="party-search-form" class="party-search-form">
+              <label class="field">
+                <span>Channel name</span>
+                <input
+                  id="party-search-input"
+                  type="text"
+                  maxlength="28"
+                  placeholder="Exact channel name..."
+                  autocomplete="off"
+                />
+              </label>
+              <button type="submit" class="btn btn-primary" id="party-search-btn">Search</button>
+            </form>
+            <p class="party-status" id="party-status">Party chat connects when your channel goes online.</p>
+            <div id="party-search-result" class="party-search-result"></div>
+          </section>
+
+          <section class="panel">
+            <h2>Invites</h2>
+            <p class="panel-hint">Incoming party invites show up here.</p>
+            <div id="party-invites" class="party-invites"></div>
+          </section>
+
+          <section class="panel party-table-panel">
+            <div class="videos-header">
+              <div>
+                <h2>My Party</h2>
+                <p class="panel-hint" id="party-table-hint">Invite friends to track subs and cash together.</p>
+              </div>
+              <button type="button" id="party-leave-btn" class="btn btn-ghost hidden">Leave party</button>
+            </div>
+            <div class="party-table-wrap">
+              <table class="party-table" aria-label="Party members">
+                <thead>
+                  <tr>
+                    <th>Channel</th>
+                    <th>Niche</th>
+                    <th>Subs</th>
+                    <th>Cash</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody id="party-table-body"></tbody>
+              </table>
+            </div>
+          </section>
         </div>
       </div>
 
@@ -152,7 +209,21 @@
               <h2>Your videos</h2>
               <p class="panel-hint" id="videos-hint">Uploads and their performance live here.</p>
             </div>
-            <div class="videos-totals" id="videos-totals" aria-label="Library totals"></div>
+            <div class="videos-toolbar">
+              <div class="videos-totals" id="videos-totals" aria-label="Library totals"></div>
+              <label class="videos-sort">
+                <span>Sort</span>
+                <select id="videos-sort">
+                  <option value="newest">Newest first</option>
+                  <option value="oldest">Oldest first</option>
+                  <option value="views-desc">Most views</option>
+                  <option value="views-asc">Least views</option>
+                  <option value="subs-desc">Most subs gained</option>
+                  <option value="earn-desc">Most earned</option>
+                  <option value="title-asc">Title A–Z</option>
+                </select>
+              </label>
+            </div>
           </div>
           <div id="videos-list" class="videos-list"></div>
         </section>
@@ -285,6 +356,20 @@
       </div>
     </dialog>
 
+    <!-- PARTY INVITE MODAL -->
+    <dialog id="party-invite-modal" class="modal">
+      <div class="modal-card">
+        <h2>Party invite</h2>
+        <p class="modal-sub" id="party-invite-text">Someone invited you to their party.</p>
+        <div class="modal-actions">
+          <button type="button" id="party-invite-decline" class="btn btn-ghost">Decline</button>
+          <button type="button" id="party-invite-accept" class="btn btn-primary">Accept</button>
+        </div>
+      </div>
+    </dialog>
+
+    <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
     <script src="game.js"></script>
+    <script src="party.js"></script>
   </body>
 </html>

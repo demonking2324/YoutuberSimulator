@@ -240,12 +240,14 @@ const els = {
   dayModalNum: document.getElementById("day-modal-num"),
   daySummary: document.getElementById("day-summary"),
   dayContinue: document.getElementById("day-continue"),
+  pageParty: document.getElementById("page-party"),
   pageStudio: document.getElementById("page-studio"),
   pageVideos: document.getElementById("page-videos"),
   pageBusiness: document.getElementById("page-business"),
   videosList: document.getElementById("videos-list"),
   videosHint: document.getElementById("videos-hint"),
   videosTotals: document.getElementById("videos-totals"),
+  videosSort: document.getElementById("videos-sort"),
   sponsorHint: document.getElementById("sponsor-hint"),
   sponsorPanel: document.getElementById("sponsor-panel"),
   merchHint: document.getElementById("merch-hint"),
@@ -283,6 +285,7 @@ const els = {
 };
 
 let pendingSponsoredUpload = false;
+let videoSortMode = "newest";
 
 const liveSession = {
   active: false,
@@ -411,17 +414,20 @@ function enterGame() {
   rebuildFeed();
   updateStats();
   renderBusinessPage();
+  if (window.Party?.start) window.Party.start();
 }
 
 
 function showPage(page) {
   state.currentPage = page;
+  els.pageParty?.classList.toggle("active", page === "party");
   els.pageStudio.classList.toggle("active", page === "studio");
   els.pageVideos.classList.toggle("active", page === "videos");
   els.pageBusiness.classList.toggle("active", page === "business");
   els.navButtons.forEach((btn) => {
     btn.classList.toggle("active", btn.dataset.page === page);
   });
+  if (page === "party" && window.Party?.render) window.Party.render();
   if (page === "videos") renderVideosPage();
   if (page === "business") renderBusinessPage();
 }
@@ -434,11 +440,38 @@ function thumbClass(video) {
   return "";
 }
 
+function getSortedVideos() {
+  const list = [...state.videos];
+  const pendingFirst = (a, b) => Number(b.status === "pending") - Number(a.status === "pending");
+
+  switch (videoSortMode) {
+    case "oldest":
+      return list.sort((a, b) => pendingFirst(a, b) || a.day - b.day || a.title.localeCompare(b.title));
+    case "views-desc":
+      return list.sort((a, b) => pendingFirst(a, b) || (b.views || 0) - (a.views || 0) || b.day - a.day);
+    case "views-asc":
+      return list.sort((a, b) => pendingFirst(a, b) || (a.views || 0) - (b.views || 0) || a.day - b.day);
+    case "subs-desc":
+      return list.sort((a, b) => pendingFirst(a, b) || (b.subGain || 0) - (a.subGain || 0) || b.day - a.day);
+    case "earn-desc":
+      return list.sort((a, b) => pendingFirst(a, b) || (b.earnings || 0) - (a.earnings || 0) || b.day - a.day);
+    case "title-asc":
+      return list.sort((a, b) => pendingFirst(a, b) || a.title.localeCompare(b.title) || b.day - a.day);
+    case "newest":
+    default:
+      return list.sort((a, b) => pendingFirst(a, b) || b.day - a.day || a.title.localeCompare(b.title));
+  }
+}
+
 function renderVideosPage() {
   const live = state.videos.filter((v) => v.status === "live");
   const totalViews = live.reduce((sum, v) => sum + v.views, 0);
   const totalSubs = live.reduce((sum, v) => sum + v.subGain, 0);
   const totalEarn = live.reduce((sum, v) => sum + v.earnings, 0);
+
+  if (els.videosSort && els.videosSort.value !== videoSortMode) {
+    els.videosSort.value = videoSortMode;
+  }
 
   els.videosHint.textContent =
     state.videos.length === 0
@@ -464,7 +497,7 @@ function renderVideosPage() {
     return;
   }
 
-  els.videosList.innerHTML = state.videos
+  els.videosList.innerHTML = getSortedVideos()
     .map((video) => {
       const pills = [];
       if (video.status === "pending") pills.push(`<span class="status-pill pending">Processing</span>`);
@@ -696,6 +729,7 @@ function updateStats() {
   updateActionAvailability();
   if (state.currentPage === "videos") renderVideosPage();
   if (state.currentPage === "business") renderBusinessPage();
+  if (state.currentPage === "party" && window.Party?.render) window.Party.render();
 }
 
 function updateActionAvailability() {
@@ -1532,6 +1566,73 @@ function tickRivals(summary) {
   state.rivalPressure = pressure;
 }
 
+function tickCatalogViews(summary) {
+  const catalog = state.videos.filter((video) => video.status === "live" && state.day - video.day >= 1);
+  if (!catalog.length) return;
+
+  let totalViews = 0;
+  let totalSubs = 0;
+  let totalEarn = 0;
+  let standout = null;
+
+  for (const video of catalog) {
+    const age = Math.max(1, state.day - video.day);
+    const decay = 1 / (1 + age * 0.28);
+    const loyalty = getNiche().loyalty;
+    const base = Math.max(3, video.views * 0.045 + state.subs * 0.015 + state.skill * 2);
+    let gained = Math.floor(base * decay * rand(0.55, 1.35) * (0.85 + state.reputation / 220) * loyalty);
+
+    // Rare second wind on an older upload
+    if (Math.random() < 0.05) {
+      gained = Math.floor(gained * rand(2.8, 6));
+      if (!standout || gained > standout.gained) {
+        standout = { video, gained };
+      }
+    }
+
+    if (gained < 1) continue;
+
+    const subBit = Math.max(0, Math.floor(gained * 0.014 * loyalty * rand(0.45, 1.15)));
+    const earnBit =
+      state.subs >= 500
+        ? (gained / 1000) * 2.6 * getNiche().cpm * rand(0.7, 1.15)
+        : gained * 0.0025;
+
+    video.views += gained;
+    video.subGain += subBit;
+    video.earnings += earnBit;
+
+    totalViews += gained;
+    totalSubs += subBit;
+    totalEarn += earnBit;
+  }
+
+  if (totalViews <= 0) return;
+
+  state.subs += totalSubs;
+  state.money += totalEarn;
+
+  summary.push(
+    `Older videos kept getting watched: +${formatViews(totalViews)} views across your catalog`
+  );
+
+  if (totalSubs > 0 || totalEarn >= 1) {
+    summary.push(
+      `Catalog leftovers: +${formatSubs(totalSubs)} subs · ${formatMoney(totalEarn)}`
+    );
+  }
+
+  if (standout) {
+    summary.push(`“${standout.video.title}” caught a second wind (+${formatViews(standout.gained)} views).`);
+    addFeed(
+      `“${standout.video.title}” is still picking up views (+${formatViews(standout.gained)}).`,
+      "good"
+    );
+  } else if (Math.random() < 0.35) {
+    addFeed(`Your older uploads quietly gained +${formatViews(totalViews)} views overnight.`, "neutral");
+  }
+}
+
 function endDay() {
   const summary = [];
 
@@ -1563,6 +1664,8 @@ function endDay() {
       );
     }
   }
+
+  tickCatalogViews(summary);
 
   if (state.merchLevel > 0) {
     const merchPay = estimatedMerchDaily() * rand(0.75, 1.25);
@@ -1674,6 +1777,11 @@ function bindActions() {
     btn.addEventListener("click", () => showPage(btn.dataset.page));
   });
 
+  els.videosSort.addEventListener("change", () => {
+    videoSortMode = els.videosSort.value;
+    renderVideosPage();
+  });
+
   els.pageBusiness.addEventListener("click", handleBusinessClick);
   els.createForm.addEventListener("submit", startChannel);
   els.videoForm.addEventListener("submit", handleVideoForm);
@@ -1692,5 +1800,13 @@ function init() {
   bindActions();
   els.channelName.focus();
 }
+
+window.YTS = {
+  getState: () => state,
+  formatMoney,
+  formatSubs,
+  escapeHtml,
+  addFeed,
+};
 
 init();
