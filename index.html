@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Youtuber Simulator</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=Syne:wght@700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="atmosphere" aria-hidden="true"></div>
+
+    <!-- CREATE CHANNEL -->
+    <section id="screen-create" class="screen screen-create active">
+      <div class="create-shell">
+        <p class="brand">Youtuber Simulator</p>
+        <h1 class="create-title">Start your channel</h1>
+        <p class="create-sub">
+          Pick a name, choose what you make, and chase your first thousand subs.
+        </p>
+
+        <form id="create-form" class="create-form">
+          <label class="field">
+            <span>Channel name</span>
+            <input
+              id="channel-name"
+              name="channelName"
+              type="text"
+              maxlength="28"
+              placeholder="e.g. PixelForge"
+              autocomplete="off"
+              required
+            />
+          </label>
+
+          <fieldset class="niche-field">
+            <legend>What's your channel about?</legend>
+            <div id="niche-grid" class="niche-grid"></div>
+          </fieldset>
+
+          <label class="field custom-niche hidden" id="custom-niche-wrap">
+            <span>Describe your niche</span>
+            <input
+              id="custom-niche"
+              name="customNiche"
+              type="text"
+              maxlength="40"
+              placeholder="e.g. Urban gardening, Speedcubing..."
+              autocomplete="off"
+            />
+          </label>
+
+          <div class="create-actions">
+            <button type="submit" class="btn btn-primary btn-launch">
+              Launch channel
+            </button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <!-- MAIN GAME -->
+    <section id="screen-game" class="screen screen-game">
+      <header class="topbar">
+        <div class="topbar-brand">
+          <span class="rec-dot" aria-hidden="true"></span>
+          <div>
+            <strong id="stat-channel-name">Channel</strong>
+            <small id="stat-niche">Niche</small>
+          </div>
+        </div>
+        <nav class="top-nav" aria-label="Channel pages">
+          <button type="button" class="nav-btn active" data-page="studio">Studio</button>
+          <button type="button" class="nav-btn" data-page="videos">Videos</button>
+          <button type="button" class="nav-btn" data-page="business">Business</button>
+        </nav>
+        <div class="topbar-right">
+          <div class="topbar-day">Day <span id="stat-day">1</span></div>
+        </div>
+      </header>
+
+      <div class="stat-strip" role="group" aria-label="Channel stats">
+        <div class="stat">
+          <span class="stat-label">Subs</span>
+          <strong id="stat-subs">0</strong>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Cash</span>
+          <strong id="stat-money">$0</strong>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Energy</span>
+          <strong id="stat-energy">100</strong>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Rep</span>
+          <strong id="stat-rep">50</strong>
+        </div>
+      </div>
+
+      <div id="page-studio" class="page page-studio active">
+        <main class="game-main">
+          <aside class="panel actions-panel">
+            <h2>Today</h2>
+            <p class="panel-hint" id="action-hint">
+              You have enough energy for one solid video — or rest and recover.
+            </p>
+            <div class="action-list">
+              <button type="button" class="action-btn" data-action="video">
+                <span class="action-title">Make a video</span>
+                <span class="action-meta">Uses energy · Can grow the channel</span>
+              </button>
+              <button type="button" class="action-btn" data-action="rest">
+                <span class="action-title">Rest</span>
+                <span class="action-meta">Recover energy · Skip upload</span>
+              </button>
+              <button type="button" class="action-btn" data-action="practice">
+                <span class="action-title">Practice editing</span>
+                <span class="action-meta">Small skill boost · Costs energy</span>
+              </button>
+              <button type="button" class="action-btn" data-action="sponsor-video" id="action-sponsor">
+                <span class="action-title">Sponsored upload</span>
+                <span class="action-meta" id="action-sponsor-meta">No active deal</span>
+              </button>
+              <button type="button" class="action-btn" data-action="livestream" id="action-live">
+                <span class="action-title">Go live</span>
+                <span class="action-meta" id="action-live-meta">Unlocks at 50 subs</span>
+              </button>
+              <button type="button" class="action-btn action-end" data-action="end-day">
+                <span class="action-title">End day</span>
+                <span class="action-meta">See overnight results</span>
+              </button>
+            </div>
+          </aside>
+
+          <section class="panel feed-panel">
+            <h2>Channel feed</h2>
+            <ul id="feed" class="feed" aria-live="polite"></ul>
+          </section>
+        </main>
+      </div>
+
+      <div id="page-videos" class="page page-videos">
+        <section class="panel videos-panel">
+          <div class="videos-header">
+            <div>
+              <h2>Your videos</h2>
+              <p class="panel-hint" id="videos-hint">Uploads and their performance live here.</p>
+            </div>
+            <div class="videos-totals" id="videos-totals" aria-label="Library totals"></div>
+          </div>
+          <div id="videos-list" class="videos-list"></div>
+        </section>
+      </div>
+
+      <div id="page-business" class="page page-business">
+        <div class="business-grid">
+          <section class="panel">
+            <h2>Sponsors</h2>
+            <p class="panel-hint" id="sponsor-hint">Brand deals unlock as you grow.</p>
+            <div id="sponsor-panel" class="biz-block"></div>
+          </section>
+
+          <section class="panel">
+            <h2>Merch</h2>
+            <p class="panel-hint" id="merch-hint">Turn fans into customers.</p>
+            <div id="merch-panel" class="biz-block"></div>
+          </section>
+
+          <section class="panel rivals-panel">
+            <h2>Rival channels</h2>
+            <p class="panel-hint">Same niche. Same algorithm. Not friends.</p>
+            <div id="rivals-panel" class="rivals-list"></div>
+          </section>
+        </div>
+      </div>
+    </section>
+
+    <!-- VIDEO MODAL -->
+    <dialog id="video-modal" class="modal">
+      <form method="dialog" id="video-form" class="modal-card">
+        <h2>New upload</h2>
+        <p class="modal-sub">Shape the video for your audience.</p>
+
+        <label class="field">
+          <span>Title</span>
+          <input
+            id="video-title"
+            type="text"
+            maxlength="60"
+            placeholder="Give it a hook..."
+            required
+          />
+        </label>
+
+        <label class="field">
+          <span>Effort</span>
+          <select id="video-effort">
+            <option value="low">Quick upload (−20 energy)</option>
+            <option value="medium" selected>Solid video (−35 energy)</option>
+            <option value="high">All-nighter edit (−55 energy)</option>
+          </select>
+        </label>
+
+        <label class="field">
+          <span>Thumbnail style</span>
+          <select id="video-thumb">
+            <option value="honest">Honest & clean</option>
+            <option value="bold">Bold & loud</option>
+            <option value="clickbait">Heavy clickbait</option>
+          </select>
+        </label>
+
+        <div class="modal-actions">
+          <button type="submit" value="cancel" class="btn btn-ghost">Cancel</button>
+          <button type="submit" value="upload" class="btn btn-primary">Upload</button>
+        </div>
+      </form>
+    </dialog>
+
+    <!-- DAY SUMMARY MODAL -->
+    <dialog id="day-modal" class="modal">
+      <div class="modal-card">
+        <h2>End of day <span id="day-modal-num">1</span></h2>
+        <ul id="day-summary" class="day-summary"></ul>
+        <button type="button" id="day-continue" class="btn btn-primary">
+          Start next day
+        </button>
+      </div>
+    </dialog>
+
+    <!-- LIVESTREAM -->
+    <dialog id="stream-modal" class="stream-modal">
+      <div class="stream-shell">
+        <div class="stream-stage">
+          <video id="stream-video" autoplay playsinline muted></video>
+          <div id="stream-placeholder" class="stream-placeholder hidden">
+            <strong>Camera off</strong>
+            <span>Allow camera access for the full live feel — chat still works either way.</span>
+          </div>
+          <div class="stream-hud">
+            <div class="live-pill"><span class="live-dot"></span> LIVE</div>
+            <div class="stream-viewers" id="stream-viewers">0 watching</div>
+            <div class="stream-timer" id="stream-timer">0:00</div>
+          </div>
+          <div id="stream-alert" class="stream-alert" aria-live="assertive"></div>
+          <div class="stream-stats-bar">
+            <span id="stream-stat-subs">+0 subs</span>
+            <span id="stream-stat-donos">$0 donated</span>
+            <span id="stream-stat-peak">Peak 0</span>
+          </div>
+        </div>
+
+        <aside class="stream-chat-panel">
+          <div class="stream-chat-header">
+            <h2>Live chat</h2>
+            <p id="stream-chat-sub">Say hi to chat</p>
+          </div>
+          <div id="stream-chat" class="stream-chat" aria-live="polite"></div>
+          <div class="stream-chat-actions">
+            <button type="button" id="end-stream-btn" class="btn btn-primary">End stream</button>
+          </div>
+        </aside>
+      </div>
+    </dialog>
+
+    <!-- STREAM SUMMARY -->
+    <dialog id="stream-summary-modal" class="modal">
+      <div class="modal-card">
+        <h2>Stream ended</h2>
+        <p class="modal-sub">Here's how the live went.</p>
+        <ul id="stream-summary" class="day-summary"></ul>
+        <div id="stream-replay-wrap" class="stream-replay-wrap hidden">
+          <p class="modal-sub">Your recording</p>
+          <video id="stream-replay" class="stream-replay" controls playsinline></video>
+        </div>
+        <button type="button" id="stream-summary-continue" class="btn btn-primary">
+          Back to studio
+        </button>
+      </div>
+    </dialog>
+
+    <script src="game.js"></script>
+  </body>
+</html>
