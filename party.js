@@ -1,47 +1,55 @@
 const Party = (() => {
   const MAX_PARTY = 8;
+  const PLAYER_TTL_MS = 45_000;
+  const POLL_MS = 3000;
 
-  const ui = {
-    page: document.getElementById("page-party"),
-    status: document.getElementById("party-status"),
-    searchForm: document.getElementById("party-search-form"),
-    searchInput: document.getElementById("party-search-input"),
-    searchBtn: document.getElementById("party-search-btn"),
-    searchResult: document.getElementById("party-search-result"),
-    invites: document.getElementById("party-invites"),
-    tableBody: document.getElementById("party-table-body"),
-    tableHint: document.getElementById("party-table-hint"),
-    leaveBtn: document.getElementById("party-leave-btn"),
-    inviteModal: document.getElementById("party-invite-modal"),
-    inviteText: document.getElementById("party-invite-text"),
-    inviteAccept: document.getElementById("party-invite-accept"),
-    inviteDecline: document.getElementById("party-invite-decline"),
-  };
-
-  let peer = null;
+  let ui = {};
+  let blobId = null;
   let ready = false;
-  let connections = new Map(); // peerId -> DataConnection
-  let members = new Map(); // channelName -> member
-  let incomingInvites = []; // { from, profile, conn }
-  let activeInvite = null;
+  let meKey = "";
+  let partyId = null;
+  let members = new Map();
+  let incomingInvites = [];
   let lastSearch = null;
-  let statsTimer = null;
+  let pollTimer = null;
+  let heartbeatTimer = null;
+  let busy = false;
 
   function api() {
     return window.YTS;
   }
 
-  function toPeerId(channelName) {
-    const slug = String(channelName || "")
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 36);
-    return `ysim-${slug || "player"}`;
+  function bindElements() {
+    ui = {
+      status: document.getElementById("party-status"),
+      searchForm: document.getElementById("party-search-form"),
+      searchInput: document.getElementById("party-search-input"),
+      searchBtn: document.getElementById("party-search-btn"),
+      searchResult: document.getElementById("party-search-result"),
+      invites: document.getElementById("party-invites"),
+      tableBody: document.getElementById("party-table-body"),
+      tableHint: document.getElementById("party-table-hint"),
+      leaveBtn: document.getElementById("party-leave-btn"),
+      inviteModal: document.getElementById("party-invite-modal"),
+      inviteText: document.getElementById("party-invite-text"),
+      inviteAccept: document.getElementById("party-invite-accept"),
+      inviteDecline: document.getElementById("party-invite-decline"),
+    };
   }
 
   function setStatus(text) {
     if (ui.status) ui.status.textContent = text;
+  }
+
+  function normName(name) {
+    return String(name || "")
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, " ");
+  }
+
+  function playerKey(name) {
+    return normName(name).replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "player";
   }
 
   function myProfile() {
@@ -52,291 +60,211 @@ const Party = (() => {
       subs: Math.floor(state.subs),
       money: Math.floor(state.money),
       day: state.day,
-      peerId: peer?.id || toPeerId(state.channelName),
+      partyId: partyId,
+      updatedAt: Date.now(),
     };
   }
 
-  function upsertSelf() {
+  function blobUrl(id = blobId) {
+    return `https://jsonblob.com/api/jsonBlob/${id}`;
+  }
+
+  async function loadRegistryId() {
+    try {
+      const res = await fetch(`registry.json?ts=${Date.now()}`, { cache: "no-store" });
+      if (!res.ok) throw new Error("missing registry");
+      const data = await res.json();
+      if (!data.blobId) throw new Error("missing blobId");
+      blobId = data.blobId;
+      return blobId;
+    } catch {
+      blobId = "019f992e-149a-73e7-aa34-b3ade1145fad";
+      return blobId;
+    }
+  }
+
+  async function readStore() {
+    const res = await fetch(blobUrl(), {
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+    });
+    if (res.status === 404) {
+      throw new Error("Party server expired. Refresh the GitHub page in a minute, or ask the owner to renew registry.");
+    }
+    if (!res.ok) throw new Error("Could not reach party server.");
+    const etag = res.headers.get("ETag");
+    const data = await res.json();
+    return {
+      etag,
+      data: {
+        players: data.players || {},
+        invites: data.invites || {},
+        parties: data.parties || {},
+        updatedAt: data.updatedAt || 0,
+      },
+    };
+  }
+
+  async function writeStore(data, etag) {
+    const headers = {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    };
+    if (etag) headers["If-Match"] = etag;
+    const res = await fetch(blobUrl(), {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ ...data, updatedAt: Date.now() }),
+    });
+    return res.ok;
+  }
+
+  async function updateStore(mutator) {
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      const { data, etag } = await readStore();
+      mutator(data);
+      const ok = await writeStore(data, etag);
+      if (ok) return data;
+      await new Promise((r) => setTimeout(r, 120 + attempt * 80));
+    }
+    throw new Error("Party server is busy. Try again.");
+  }
+
+  function upsertSelfLocal() {
     const me = myProfile();
+    if (!me.channelName) return;
     members.set(me.channelName, { ...me, online: true, isSelf: true });
   }
 
-  function send(conn, payload) {
-    if (!conn || !conn.open) return;
+  function isFresh(player) {
+    return player && Date.now() - (player.updatedAt || 0) < PLAYER_TTL_MS;
+  }
+
+  async function heartbeat() {
+    if (!ready || !meKey || busy) return;
+    busy = true;
     try {
-      conn.send(payload);
-    } catch {
-      /* ignore */
-    }
-  }
+      const profile = myProfile();
+      await updateStore((data) => {
+        data.players[meKey] = profile;
 
-  function broadcast(payload, exceptPeerId = null) {
-    connections.forEach((conn, peerId) => {
-      if (peerId === exceptPeerId) return;
-      send(conn, payload);
-    });
-  }
+        // Expire stale players
+        Object.keys(data.players).forEach((key) => {
+          if (!isFresh(data.players[key]) && key !== meKey) {
+            delete data.players[key];
+          }
+        });
 
-  function rosterPayload() {
-    return {
-      type: "party-sync",
-      members: [...members.values()].map(({ channelName, nicheLabel, subs, money, day, peerId, online }) => ({
-        channelName,
-        nicheLabel,
-        subs,
-        money,
-        day,
-        peerId,
-        online: Boolean(online),
-      })),
-    };
-  }
-
-  function mergeMember(profile, online = true) {
-    if (!profile?.channelName) return;
-    const prev = members.get(profile.channelName) || {};
-    members.set(profile.channelName, {
-      ...prev,
-      ...profile,
-      online,
-      isSelf: profile.channelName === api().getState().channelName,
-    });
-  }
-
-  function ensureSelfInParty() {
-    upsertSelf();
-    render();
-  }
-
-  function rememberConn(conn) {
-    if (!conn?.peer) return;
-    connections.set(conn.peer, conn);
-    if (conn._ytsBound) return;
-    conn._ytsBound = true;
-    conn.on("data", (data) => onData(conn, data));
-    conn.on("close", () => onConnClose(conn));
-    conn.on("error", () => onConnClose(conn));
-  }
-
-  function onConnClose(conn) {
-    connections.delete(conn.peer);
-    for (const [name, member] of members) {
-      if (member.peerId === conn.peer && !member.isSelf) {
-        member.online = false;
-        members.set(name, member);
-      }
-    }
-    incomingInvites = incomingInvites.filter((invite) => invite.conn !== conn);
-    if (lastSearch?.conn === conn) {
-      lastSearch = { ...lastSearch, offline: true };
-    }
-    render();
-  }
-
-  function onData(conn, data) {
-    if (!data || typeof data !== "object") return;
-
-    switch (data.type) {
-      case "profile-request":
-        send(conn, { type: "profile-response", profile: myProfile() });
-        break;
-
-      case "profile-response":
-        if (lastSearch && lastSearch.peerId === conn.peer) {
-          lastSearch = {
-            ...lastSearch,
-            profile: data.profile,
-            conn,
-            offline: false,
+        if (partyId) {
+          data.parties[partyId] = data.parties[partyId] || {};
+          data.parties[partyId][meKey] = {
+            channelName: profile.channelName,
+            nicheLabel: profile.nicheLabel,
+            subs: profile.subs,
+            money: profile.money,
+            day: profile.day,
+            updatedAt: profile.updatedAt,
           };
-          renderSearchResult();
         }
-        break;
-
-      case "party-invite":
-        handleIncomingInvite(conn, data);
-        break;
-
-      case "party-invite-response":
-        handleInviteResponse(conn, data);
-        break;
-
-      case "party-sync":
-        if (Array.isArray(data.members)) {
-          data.members.forEach((member) => mergeMember(member, member.online !== false));
-          upsertSelf();
-          render();
-          api().addFeed("Party roster updated.", "neutral");
-        }
-        break;
-
-      case "party-stats":
-        if (data.profile) {
-          mergeMember(data.profile, true);
-          renderTable();
-        }
-        break;
-
-      case "party-leave":
-        if (data.channelName && data.channelName !== api().getState().channelName) {
-          members.delete(data.channelName);
-          api().addFeed(`${data.channelName} left the party.`, "neutral");
-          render();
-        }
-        break;
-
-      default:
-        break;
-    }
-  }
-
-  function handleIncomingInvite(conn, data) {
-    const profile = data.fromProfile;
-    if (!profile?.channelName) return;
-    if (profile.channelName === api().getState().channelName) return;
-
-    incomingInvites = incomingInvites.filter((invite) => invite.from !== profile.channelName);
-    const invite = { from: profile.channelName, profile, conn };
-    incomingInvites.unshift(invite);
-    activeInvite = invite;
-
-    ui.inviteText.textContent = `${profile.channelName} invited you to their party (${api().formatSubs(profile.subs)} subs · ${api().formatMoney(profile.money)}).`;
-    if (!ui.inviteModal.open) ui.inviteModal.showModal();
-    api().addFeed(`${profile.channelName} sent you a party invite.`, "good");
-    renderInvites();
-  }
-
-  function handleInviteResponse(conn, data) {
-    if (!data.accepted) {
-      api().addFeed(`${data.profile?.channelName || "Someone"} declined your party invite.`, "neutral");
-      setStatus("Invite declined.");
-      return;
-    }
-
-    mergeMember(data.profile, true);
-    upsertSelf();
-    rememberConn(conn);
-    broadcast(rosterPayload());
-    send(conn, rosterPayload());
-    api().addFeed(`${data.profile.channelName} joined your party!`, "good");
-    setStatus(`${data.profile.channelName} joined the party.`);
-    render();
-  }
-
-  function acceptInvite() {
-    const invite = activeInvite || incomingInvites[0];
-    if (!invite) {
-      ui.inviteModal.close();
-      return;
-    }
-
-    if (members.size >= MAX_PARTY) {
-      setStatus("Party is full.");
-      send(invite.conn, { type: "party-invite-response", accepted: false, profile: myProfile() });
-      ui.inviteModal.close();
-      return;
-    }
-
-    rememberConn(invite.conn);
-    mergeMember(invite.profile, true);
-    upsertSelf();
-    send(invite.conn, { type: "party-invite-response", accepted: true, profile: myProfile() });
-    send(invite.conn, rosterPayload());
-    broadcast(rosterPayload(), invite.conn.peer);
-
-    incomingInvites = incomingInvites.filter((item) => item !== invite);
-    activeInvite = null;
-    ui.inviteModal.close();
-    api().addFeed(`You joined ${invite.from}'s party.`, "good");
-    setStatus(`You're in a party with ${invite.from}.`);
-    render();
-  }
-
-  function declineInvite() {
-    const invite = activeInvite || incomingInvites[0];
-    if (invite) {
-      send(invite.conn, { type: "party-invite-response", accepted: false, profile: myProfile() });
-      incomingInvites = incomingInvites.filter((item) => item !== invite);
-      api().addFeed(`You declined ${invite.from}'s party invite.`, "neutral");
-    }
-    activeInvite = null;
-    ui.inviteModal.close();
-    renderInvites();
-  }
-
-  async function connectToPeer(peerId) {
-    if (!peer || !ready) throw new Error("Party network is not ready yet.");
-    if (peerId === peer.id) throw new Error("That's your own channel.");
-
-    const existing = connections.get(peerId);
-    if (existing?.open) return existing;
-
-    return new Promise((resolve, reject) => {
-      const conn = peer.connect(peerId, { reliable: true });
-      let settled = false;
-
-      const timer = setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        try {
-          conn.close();
-        } catch {
-          /* ignore */
-        }
-        reject(new Error("Player not found or offline."));
-      }, 6000);
-
-      conn.on("open", () => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        rememberConn(conn);
-        resolve(conn);
       });
+    } catch (error) {
+      setStatus(error.message || "Party heartbeat failed.");
+    } finally {
+      busy = false;
+    }
+  }
 
-      conn.on("error", () => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        reject(new Error("Could not connect."));
-      });
-    });
+  async function syncFromServer() {
+    if (!ready || !meKey) {
+      render();
+      return;
+    }
+
+    try {
+      const { data } = await readStore();
+      const me = data.players[meKey];
+      if (me?.partyId) partyId = me.partyId;
+
+      // Invites for me
+      const mine = Array.isArray(data.invites[meKey]) ? data.invites[meKey] : [];
+      const freshInvites = mine.filter((invite) => Date.now() - (invite.sentAt || 0) < 120000);
+      if (freshInvites.length > incomingInvites.length) {
+        const newest = freshInvites[0];
+        if (newest && ui.inviteModal && !ui.inviteModal.open) {
+          ui.inviteText.textContent = `${newest.fromName} invited you to their party (${api().formatSubs(newest.fromSubs)} subs · ${api().formatMoney(newest.fromMoney)}).`;
+          ui.inviteModal.showModal();
+          api().addFeed(`${newest.fromName} sent you a party invite.`, "good");
+        }
+      }
+      incomingInvites = freshInvites;
+
+      // Party members
+      members.clear();
+      upsertSelfLocal();
+      if (partyId && data.parties[partyId]) {
+        Object.values(data.parties[partyId]).forEach((member) => {
+          if (!member?.channelName) return;
+          const online = isFresh(member) || normName(member.channelName) === normName(api().getState().channelName);
+          members.set(member.channelName, {
+            ...member,
+            online,
+            isSelf: normName(member.channelName) === normName(api().getState().channelName),
+          });
+        });
+      }
+
+      // Keep search result fresh if possible
+      if (lastSearch?.key && data.players[lastSearch.key] && isFresh(data.players[lastSearch.key])) {
+        lastSearch.profile = data.players[lastSearch.key];
+        lastSearch.offline = false;
+      } else if (lastSearch) {
+        lastSearch.offline = true;
+      }
+
+      if (!ui.status?.textContent?.includes("busy")) {
+        setStatus(`Online as “${api().getState().channelName}”. Search friends by exact channel name.`);
+      }
+      render();
+    } catch (error) {
+      setStatus(error.message || "Party sync failed.");
+    }
   }
 
   async function searchPlayer(rawName) {
     const name = rawName.trim();
     if (!name) return;
     if (!ready) {
-      setStatus("Still connecting to party network…");
+      setStatus("Party network is still starting…");
       return;
     }
 
-    const selfName = api().getState().channelName;
-    if (name.toLowerCase() === selfName.toLowerCase()) {
+    const key = playerKey(name);
+    if (key === meKey) {
       setStatus("That's you.");
       return;
     }
 
-    const peerId = toPeerId(name);
     ui.searchBtn.disabled = true;
     setStatus(`Searching for “${name}”…`);
-    ui.searchResult.innerHTML = `<div class="biz-card"><p>Looking for ${api().escapeHtml(name)}…</p></div>`;
-
     try {
-      const conn = await connectToPeer(peerId);
-      lastSearch = { name, peerId, conn, profile: null, offline: false };
-      send(conn, { type: "profile-request" });
-      setStatus(`Found a player online as “${name}”.`);
-      // profile-response will fill the card; show a temporary card meanwhile
-      renderSearchResult(true);
+      const { data } = await readStore();
+      const profile = data.players[key];
+      if (!profile || !isFresh(profile)) {
+        lastSearch = null;
+        ui.searchResult.innerHTML = `
+          <div class="biz-card">
+            <h3>Not found</h3>
+            <p>No online player with that exact channel name.</p>
+            <p>They must have the game open on My Party / be playing right now.</p>
+          </div>`;
+        setStatus("Player not found or offline.");
+        return;
+      }
+
+      lastSearch = { name: profile.channelName, key, profile, offline: false };
+      setStatus(`Found “${profile.channelName}”.`);
+      renderSearchResult();
     } catch (error) {
-      lastSearch = null;
-      ui.searchResult.innerHTML = `
-        <div class="biz-card">
-          <h3>Not found</h3>
-          <p>${api().escapeHtml(error.message || "Player not found or offline.")}</p>
-          <p>They need the game open with that exact channel name.</p>
-        </div>`;
       setStatus(error.message || "Search failed.");
     } finally {
       ui.searchBtn.disabled = false;
@@ -344,69 +272,160 @@ const Party = (() => {
   }
 
   async function inviteSearchedPlayer() {
-    if (!lastSearch?.conn || !lastSearch.profile) {
-      setStatus("Search for a player first.");
+    if (!lastSearch?.profile || lastSearch.offline) {
+      setStatus("Search for an online player first.");
       return;
     }
     if (members.size >= MAX_PARTY) {
       setStatus("Party is full (max 8).");
       return;
     }
-    if (members.has(lastSearch.profile.channelName)) {
-      setStatus("They're already in your party.");
-      return;
-    }
 
-    upsertSelf();
-    send(lastSearch.conn, {
-      type: "party-invite",
-      fromProfile: myProfile(),
-      partyId: peer.id,
-    });
-    setStatus(`Invite sent to ${lastSearch.profile.channelName}.`);
-    api().addFeed(`Party invite sent to ${lastSearch.profile.channelName}.`, "neutral");
+    const targetKey = lastSearch.key;
+    const me = myProfile();
+    if (!partyId) partyId = `party-${meKey}-${Date.now().toString(36)}`;
+
+    try {
+      await updateStore((data) => {
+        data.players[meKey] = { ...me, partyId };
+        data.parties[partyId] = data.parties[partyId] || {};
+        data.parties[partyId][meKey] = {
+          channelName: me.channelName,
+          nicheLabel: me.nicheLabel,
+          subs: me.subs,
+          money: me.money,
+          day: me.day,
+          updatedAt: me.updatedAt,
+        };
+
+        const list = Array.isArray(data.invites[targetKey]) ? data.invites[targetKey] : [];
+        const invite = {
+          id: `${meKey}-${Date.now()}`,
+          fromKey: meKey,
+          fromName: me.channelName,
+          fromSubs: me.subs,
+          fromMoney: me.money,
+          partyId,
+          sentAt: Date.now(),
+        };
+        data.invites[targetKey] = [invite, ...list.filter((item) => item.fromKey !== meKey)].slice(0, 10);
+      });
+
+      upsertSelfLocal();
+      setStatus(`Invite sent to ${lastSearch.profile.channelName}.`);
+      api().addFeed(`Party invite sent to ${lastSearch.profile.channelName}.`, "neutral");
+      render();
+    } catch (error) {
+      setStatus(error.message || "Invite failed.");
+    }
   }
 
-  function leaveParty() {
-    const me = api().getState().channelName;
-    broadcast({ type: "party-leave", channelName: me });
-    connections.forEach((conn) => {
-      try {
-        conn.close();
-      } catch {
-        /* ignore */
-      }
-    });
-    connections.clear();
-    members.clear();
-    upsertSelf();
-    setStatus("You left the party.");
-    api().addFeed("You left the party.", "neutral");
-    render();
+  async function acceptInvite() {
+    const invite = incomingInvites[0];
+    if (!invite) {
+      ui.inviteModal?.close();
+      return;
+    }
+
+    try {
+      partyId = invite.partyId;
+      const me = myProfile();
+      await updateStore((data) => {
+        data.players[meKey] = { ...me, partyId };
+        data.parties[partyId] = data.parties[partyId] || {};
+        data.parties[partyId][meKey] = {
+          channelName: me.channelName,
+          nicheLabel: me.nicheLabel,
+          subs: me.subs,
+          money: me.money,
+          day: me.day,
+          updatedAt: Date.now(),
+        };
+        // Also ensure inviter stays listed
+        const host = data.players[invite.fromKey];
+        if (host) {
+          data.parties[partyId][invite.fromKey] = {
+            channelName: host.channelName,
+            nicheLabel: host.nicheLabel,
+            subs: host.subs,
+            money: host.money,
+            day: host.day,
+            updatedAt: host.updatedAt,
+          };
+        }
+        data.invites[meKey] = (data.invites[meKey] || []).filter((item) => item.id !== invite.id);
+      });
+
+      incomingInvites = incomingInvites.filter((item) => item.id !== invite.id);
+      ui.inviteModal?.close();
+      api().addFeed(`You joined ${invite.fromName}'s party.`, "good");
+      setStatus(`Joined ${invite.fromName}'s party.`);
+      await syncFromServer();
+    } catch (error) {
+      setStatus(error.message || "Could not accept invite.");
+    }
   }
 
-  function renderSearchResult(waiting = false) {
-    if (!lastSearch) {
-      ui.searchResult.innerHTML = "";
+  async function declineInvite() {
+    const invite = incomingInvites[0];
+    if (!invite) {
+      ui.inviteModal?.close();
+      return;
+    }
+    try {
+      await updateStore((data) => {
+        data.invites[meKey] = (data.invites[meKey] || []).filter((item) => item.id !== invite.id);
+      });
+      incomingInvites = incomingInvites.filter((item) => item.id !== invite.id);
+      ui.inviteModal?.close();
+      api().addFeed(`You declined ${invite.fromName}'s party invite.`, "neutral");
+      renderInvites();
+    } catch (error) {
+      setStatus(error.message || "Could not decline invite.");
+    }
+  }
+
+  async function leaveParty() {
+    if (!partyId) return;
+    const leavingId = partyId;
+    try {
+      await updateStore((data) => {
+        if (data.parties[leavingId]) {
+          delete data.parties[leavingId][meKey];
+          if (!Object.keys(data.parties[leavingId]).length) delete data.parties[leavingId];
+        }
+        if (data.players[meKey]) {
+          data.players[meKey].partyId = null;
+        }
+      });
+      partyId = null;
+      members.clear();
+      upsertSelfLocal();
+      setStatus("You left the party.");
+      api().addFeed("You left the party.", "neutral");
+      render();
+    } catch (error) {
+      setStatus(error.message || "Could not leave party.");
+    }
+  }
+
+  function renderSearchResult() {
+    if (!ui.searchResult) return;
+    if (!lastSearch?.profile) {
+      if (!lastSearch) ui.searchResult.innerHTML = "";
       return;
     }
 
-    if (waiting && !lastSearch.profile) {
-      ui.searchResult.innerHTML = `<div class="biz-card"><p>Connected — loading channel stats…</p></div>`;
-      return;
-    }
-
-    if (!lastSearch.profile) return;
-
+    const yts = api();
     const p = lastSearch.profile;
-    const already = members.has(p.channelName);
+    const already = [...members.values()].some((m) => normName(m.channelName) === normName(p.channelName));
     ui.searchResult.innerHTML = `
       <div class="biz-card">
-        <h3>${api().escapeHtml(p.channelName)}</h3>
-        <p>${api().escapeHtml(p.nicheLabel || "Creator")} · Day ${p.day || "?"}</p>
+        <h3>${yts.escapeHtml(p.channelName)}</h3>
+        <p>${yts.escapeHtml(p.nicheLabel || "Creator")} · Day ${p.day || "?"}</p>
         <div class="biz-stat-row">
-          <span>${api().formatSubs(p.subs)} subs</span>
-          <span>${api().formatMoney(p.money)}</span>
+          <span>${yts.formatSubs(p.subs)} subs</span>
+          <span>${yts.formatMoney(p.money)}</span>
           <span>${lastSearch.offline ? "Offline" : "Online"}</span>
         </div>
         <div class="biz-actions">
@@ -419,47 +438,40 @@ const Party = (() => {
 
   function renderInvites() {
     if (!ui.invites) return;
+    const yts = api();
     if (!incomingInvites.length) {
       ui.invites.innerHTML = `<div class="biz-card"><p>No invites right now.</p></div>`;
       return;
     }
 
-    const yts = api();
     ui.invites.innerHTML = incomingInvites
-      .map((invite, index) => {
-        const p = invite.profile;
-        return `
-          <div class="biz-card">
-            <h3>${yts.escapeHtml(p.channelName)}</h3>
-            <p>wants you in their party</p>
-            <div class="biz-stat-row">
-              <span>${yts.formatSubs(p.subs)} subs</span>
-              <span>${yts.formatMoney(p.money)}</span>
-            </div>
-            <div class="biz-actions">
-              <button type="button" class="btn btn-primary" data-party="accept-invite" data-index="${index}">Accept</button>
-              <button type="button" class="btn btn-ghost" data-party="decline-invite" data-index="${index}">Decline</button>
-            </div>
-          </div>`;
-      })
+      .map((invite, index) => `
+        <div class="biz-card">
+          <h3>${yts.escapeHtml(invite.fromName)}</h3>
+          <p>wants you in their party</p>
+          <div class="biz-stat-row">
+            <span>${yts.formatSubs(invite.fromSubs)} subs</span>
+            <span>${yts.formatMoney(invite.fromMoney)}</span>
+          </div>
+          <div class="biz-actions">
+            <button type="button" class="btn btn-primary" data-party="accept-invite" data-index="${index}">Accept</button>
+            <button type="button" class="btn btn-ghost" data-party="decline-invite" data-index="${index}">Decline</button>
+          </div>
+        </div>`)
       .join("");
   }
 
   function renderTable() {
     if (!ui.tableBody) return;
     const yts = api();
-    if (!yts?.getState) {
-      ui.tableBody.innerHTML = `<tr class="is-self"><td colspan="5">Loading party…</td></tr>`;
-      return;
-    }
+    upsertSelfLocal();
 
-    upsertSelf();
     const rows = [...members.values()]
       .filter((row) => row.channelName)
       .sort((a, b) => {
         if (a.isSelf) return -1;
         if (b.isSelf) return 1;
-        return b.subs - a.subs;
+        return (b.subs || 0) - (a.subs || 0);
       });
 
     const others = rows.filter((row) => !row.isSelf).length;
@@ -472,7 +484,7 @@ const Party = (() => {
     ui.leaveBtn?.classList.toggle("hidden", others === 0);
 
     if (!rows.length) {
-      ui.tableBody.innerHTML = `<tr class="is-self"><td colspan="5">Your channel will show up here.</td></tr>`;
+      ui.tableBody.innerHTML = `<tr class="is-self"><td colspan="5">Your channel will show up here after launch.</td></tr>`;
       return;
     }
 
@@ -483,8 +495,8 @@ const Party = (() => {
           <tr class="${member.isSelf ? "is-self" : ""}">
             <td>${yts.escapeHtml(member.channelName)}</td>
             <td>${yts.escapeHtml(member.nicheLabel || "—")}</td>
-            <td>${yts.formatSubs(member.subs)}</td>
-            <td>${yts.formatMoney(member.money)}</td>
+            <td>${yts.formatSubs(member.subs || 0)}</td>
+            <td>${yts.formatMoney(member.money || 0)}</td>
             <td><span class="party-online ${member.online || member.isSelf ? "on" : "off"}">${status}</span></td>
           </tr>`;
       })
@@ -497,98 +509,9 @@ const Party = (() => {
       renderInvites();
       renderTable();
     } catch (error) {
-      console.error("Party UI render failed", error);
-      setStatus("Party UI hit a snag, but you can still search.");
+      console.error(error);
+      setStatus("Party UI hit a snag. Try refreshing.");
     }
-  }
-
-  function broadcastStats() {
-    if (!ready || connections.size === 0) {
-      renderTable();
-      return;
-    }
-    upsertSelf();
-    broadcast({ type: "party-stats", profile: myProfile() });
-    renderTable();
-  }
-
-  function startNetworking() {
-    if (typeof Peer === "undefined") {
-      setStatus("Party network failed to load. Check your connection and refresh.");
-      return;
-    }
-
-    const state = api().getState();
-    if (!state.channelName) return;
-
-    if (peer) {
-      try {
-        peer.destroy();
-      } catch {
-        /* ignore */
-      }
-      peer = null;
-    }
-
-    ready = false;
-    connections.clear();
-    members.clear();
-    incomingInvites = [];
-    lastSearch = null;
-    upsertSelf();
-    render();
-
-    const peerId = toPeerId(state.channelName);
-    setStatus("Connecting party network…");
-
-    peer = new Peer(peerId, {
-      debug: 0,
-      config: {
-        iceServers: [
-          { urls: "stun:stun.l.google.com:19302" },
-          { urls: "stun:stun1.l.google.com:19302" },
-        ],
-      },
-    });
-
-    peer.on("open", (id) => {
-      ready = true;
-      setStatus(`Online as “${state.channelName}” — friends can search your exact channel name.`);
-      upsertSelf();
-      render();
-      api().addFeed("Party network online. Friends can find your channel name.", "good");
-    });
-
-    peer.on("connection", (conn) => {
-      rememberConn(conn);
-    });
-
-    peer.on("disconnected", () => {
-      ready = false;
-      setStatus("Disconnected — trying to reconnect…");
-      try {
-        peer.reconnect();
-      } catch {
-        /* ignore */
-      }
-    });
-
-    peer.on("error", (err) => {
-      const type = err?.type || "";
-      if (type === "unavailable-id") {
-        setStatus("That channel name is already online. Pick a different name and relaunch.");
-        api().addFeed("Party online name taken — choose another channel name.", "bad");
-        return;
-      }
-      if (type === "peer-unavailable") {
-        setStatus("Player not found or offline.");
-        return;
-      }
-      setStatus("Party network error. You can still play solo.");
-    });
-
-    clearInterval(statsTimer);
-    statsTimer = setInterval(broadcastStats, 3000);
   }
 
   function bindUi() {
@@ -607,9 +530,10 @@ const Party = (() => {
       const btn = event.target.closest("[data-party]");
       if (!btn) return;
       const index = Number(btn.dataset.index || 0);
-      const invite = incomingInvites[index];
-      if (!invite) return;
-      activeInvite = invite;
+      if (index > 0 && index < incomingInvites.length) {
+        const [picked] = incomingInvites.splice(index, 1);
+        if (picked) incomingInvites.unshift(picked);
+      }
       if (btn.dataset.party === "accept-invite") acceptInvite();
       if (btn.dataset.party === "decline-invite") declineInvite();
     });
@@ -619,7 +543,44 @@ const Party = (() => {
     ui.inviteDecline?.addEventListener("click", declineInvite);
   }
 
+  async function startNetworking() {
+    const state = api().getState();
+    if (!state.channelName) return;
+
+    meKey = playerKey(state.channelName);
+    partyId = null;
+    members.clear();
+    incomingInvites = [];
+    lastSearch = null;
+    upsertSelfLocal();
+    render();
+    setStatus("Connecting party network…");
+
+    try {
+      await loadRegistryId();
+      // Ensure our player row exists
+      await updateStore((data) => {
+        data.players[meKey] = myProfile();
+      });
+      ready = true;
+      setStatus(`Online as “${state.channelName}”. Friends can search your exact channel name.`);
+      api().addFeed("Party network online. Friends can find your channel name.", "good");
+
+      clearInterval(heartbeatTimer);
+      clearInterval(pollTimer);
+      heartbeatTimer = setInterval(heartbeat, POLL_MS);
+      pollTimer = setInterval(syncFromServer, POLL_MS);
+      await syncFromServer();
+    } catch (error) {
+      ready = false;
+      setStatus(error.message || "Party network failed to start.");
+      api().addFeed("Party network failed. You can still play solo.", "bad");
+      render();
+    }
+  }
+
   function init() {
+    bindElements();
     bindUi();
     render();
   }
@@ -628,8 +589,9 @@ const Party = (() => {
     init,
     start: startNetworking,
     render,
-    broadcastStats,
-    ensureSelfInParty,
+    broadcastStats: () => {
+      heartbeat();
+    },
   };
 })();
 
